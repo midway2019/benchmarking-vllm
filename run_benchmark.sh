@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 MODEL_NAME="${HF_MODEL_NAME:-meta-llama/Meta-Llama-3.1-8B-Instruct}"
 INPUT_LEN="${INPUT_LEN:-453}"
 OUTPUT_LEN="${OUTPUT_LEN:-453}"
-PROXY_PORT="${PROXY_PORT:-8000}"
+PROXY_PORT="${PROXY_PORT:-10001}"
 RESULTS_DIR="${RESULTS_DIR:-results}"
 NUM_WARMUP="${NUM_WARMUP:-3}"
 INTER_BATCH_DELAY="${INTER_BATCH_DELAY:-5}"
@@ -101,10 +101,10 @@ echo "  All vLLM instances are ready!"
 # Step 2: Launch Proxy Server
 # ========================================
 echo ""
-echo "[Step 2/5] Launching proxy server on port $PROXY_PORT..."
-python3 "$SCRIPT_DIR/proxy_server.py" --port "$PROXY_PORT" \
-    --prefill localhost:8100 \
-    --decode localhost:8201 localhost:8202 localhost:8203 \
+echo "[Step 2/5] Launching proxy server (ZMQ:30001, HTTP:$PROXY_PORT)..."
+python3 "$SCRIPT_DIR/proxy_server.py" \
+    --zmq-port 30001 \
+    --http-port "$PROXY_PORT" \
     > "$LOG_DIR/proxy.log" 2>&1 &
 PROXY_PID=$!
 echo "  Proxy PID: $PROXY_PID"

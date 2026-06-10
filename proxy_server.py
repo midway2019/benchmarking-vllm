@@ -1,277 +1,286 @@
 """
 proxy_server.py
-PD分离架构的Proxy路由服务器（对齐vLLM官方disagg_proxy_demo模式）。
+PD分离架构的Proxy路由服务器。
 
-核心机制：
-- Proxy 接收请求后，先选择一个 decode 实例
-- 将请求发给 prefill 实例（max_tokens=1），prefill 通过内部 NCCL 将 KV 传给 decode
-- 再将原始请求发给 decode 实例完成生成
-- KV cache 路由由 vLLM 内部的 kv_connector_extra_config 中的 proxy（端口30001）自动处理
+基于 vLLM 官方 disagg_proxy_p2p_nccl_xpyd.py 的核心机制：
+1. 端口30001: ZMQ服务发现 - vLLM实例启动时通过ZMQ注册自己
+2. 端口10001: HTTP代理 - 接收客户端请求，构造带地址的request_id
+3. request_id格式: ___prefill_addr_{zmq_addr}___decode_addr_{zmq_addr}_{uuid}
+4. 通过 X-Request-Id header 传递给 vLLM 实例
+
+附加功能：记录 prefill/decode 时间用于 benchmark。
 """
 
 import argparse
-import asyncio
-import itertools
-import json
-import logging
-import random
+import os
+import socket
+import threading
 import time
+import uuid
 from collections import defaultdict
+from typing import Any
 
 import aiohttp
-import uvicorn
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+import msgpack
+import zmq
+from quart import Quart, make_response, request, jsonify
 
-AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+# --- Service Discovery State ---
+prefill_instances: dict[str, Any] = {}  # http_address: (zmq_address, stamp)
+decode_instances: dict[str, Any] = {}   # http_address: (zmq_address, stamp)
+prefill_cv = threading.Condition()
+decode_cv = threading.Condition()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="vLLM PD Disaggregated Proxy")
-
-# --- Configuration (set via command-line args in main) ---
-PREFILL_INSTANCES = ["localhost:8100"]
-DECODE_INSTANCES = ["localhost:8201", "localhost:8202", "localhost:8203"]
+DEFAULT_PING_SECONDS = 15
+count = 0
 
 # --- Metrics Storage ---
-metrics_store = defaultdict(list)
+metrics_store: dict[str, list] = defaultdict(list)
+import asyncio
 metrics_lock = asyncio.Lock()
 
-
-async def record_metric(batch_id: str, request_id: str, prefill_time: float,
-                        decode_time: float, total_time: float,
-                        decode_instance: str):
-    """Record timing metrics for a single request."""
-    async with metrics_lock:
-        metrics_store[batch_id].append({
-            "request_id": request_id,
-            "prefill_time_ms": round(prefill_time * 1000, 2),
-            "decode_time_ms": round(decode_time * 1000, 2),
-            "total_time_ms": round(total_time * 1000, 2),
-            "decode_instance": decode_instance,
-            "timestamp": time.time(),
-        })
+AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+app = Quart(__name__)
 
 
-async def forward_request(url: str, data: dict):
-    """Forward a request to a vLLM instance and yield the response."""
-    async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
-        headers = {"Authorization": "Bearer EMPTY"}
-        async with session.post(url, json=data, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                raise HTTPException(status_code=response.status, detail=error_text)
+def random_uuid() -> str:
+    return str(uuid.uuid4().hex)
 
-            # Check if streaming
-            content_type = response.headers.get("content-type", "")
-            if "text/event-stream" in content_type:
-                async for chunk in response.content.iter_any():
-                    yield chunk
+
+# ========================
+# ZMQ Service Discovery
+# ========================
+
+def _remove_oldest_instances(instances: dict[str, Any]) -> None:
+    oldest_key = next(iter(instances), None)
+    while oldest_key is not None:
+        value = instances[oldest_key]
+        if value[1] > time.time():
+            break
+        print(f"Remove [HTTP:{oldest_key}, ZMQ:{value[0]}, stamp:{value[1]}]")
+        instances.pop(oldest_key, None)
+        oldest_key = next(iter(instances), None)
+
+
+def _listen_for_register(poller, router_socket):
+    global prefill_instances, decode_instances
+    global prefill_cv, decode_cv
+    while True:
+        socks = dict(poller.poll())
+        if router_socket in socks:
+            remote_address, message = router_socket.recv_multipart()
+            data = msgpack.loads(message)
+            if data["type"] == "P":
+                with prefill_cv:
+                    node = prefill_instances.get(data["http_address"], None)
+                    prefill_instances[data["http_address"]] = (
+                        data["zmq_address"],
+                        time.time() + DEFAULT_PING_SECONDS,
+                    )
+                    _remove_oldest_instances(prefill_instances)
+            elif data["type"] == "D":
+                with decode_cv:
+                    node = decode_instances.get(data["http_address"], None)
+                    decode_instances[data["http_address"]] = (
+                        data["zmq_address"],
+                        time.time() + DEFAULT_PING_SECONDS,
+                    )
+                    _remove_oldest_instances(decode_instances)
             else:
-                body = await response.read()
-                yield body
+                print(f"Unexpected message from {remote_address}, data: {data}")
+                continue
+            if node is None:
+                print(f"Add [HTTP:{data['http_address']}, ZMQ:{data['zmq_address']}]")
 
 
-@app.post("/v1/completions")
-async def proxy_completions(raw_request: Request):
-    """
-    Proxy /v1/completions with PD disaggregated routing.
-    Follows the same pattern as vLLM's official disagg_proxy_demo.py.
-    """
-    request_body = await raw_request.json()
-    bench_batch_id = request_body.pop("batch_id", "default")
-    bench_request_id = request_body.pop("request_id", f"req-{time.time()}")
-    original_max_tokens = request_body.get("max_tokens", 453)
+def start_service_discovery(hostname, port):
+    if not hostname:
+        hostname = socket.gethostname()
+    if port == 0:
+        raise ValueError("Port cannot be 0")
 
-    # Phase 1: Prefill (send to prefill instance with max_tokens=1)
-    kv_prepare_request = request_body.copy()
-    kv_prepare_request["max_tokens"] = 1
+    context = zmq.Context()
+    router_socket = context.socket(zmq.ROUTER)
+    router_socket.bind(f"tcp://{hostname}:{port}")
 
-    prefill_instance = random.choice(PREFILL_INSTANCES)
-    prefill_start = time.perf_counter()
+    poller = zmq.Poller()
+    poller.register(router_socket, zmq.POLLIN)
 
+    listener_thread = threading.Thread(
+        target=_listen_for_register,
+        args=[poller, router_socket],
+        daemon=True,
+    )
+    listener_thread.start()
+    return listener_thread
+
+
+# ========================
+# HTTP Request Forwarding
+# ========================
+
+async def forward_request(url, data, request_id):
+    async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY', 'EMPTY')}",
+            "X-Request-Id": request_id,
+        }
+        async with session.post(url=url, json=data, headers=headers) as response:
+            if response.status == 200:
+                async for chunk_bytes in response.content.iter_chunked(1024):
+                    yield chunk_bytes
+
+
+# ========================
+# HTTP Proxy Endpoints
+# ========================
+
+@app.route("/v1/completions", methods=["POST"])
+@app.route("/v1/chat/completions", methods=["POST"])
+async def handle_request():
     try:
+        original_request_data = await request.get_json()
+
+        # Extract benchmark metadata (won't be forwarded to vLLM)
+        bench_batch_id = original_request_data.pop("batch_id", "default")
+        bench_request_id = original_request_data.pop("request_id", f"req-{time.time()}")
+
+        prefill_request = original_request_data.copy()
+        prefill_request["max_tokens"] = 1
+        if "max_completion_tokens" in prefill_request:
+            prefill_request["max_completion_tokens"] = 1
+
+        global count, prefill_instances, decode_instances
+        global prefill_cv, decode_cv
+
+        # Wait for at least one prefill and one decode instance
+        retry = 0
+        while retry < 60:
+            with prefill_cv:
+                prefill_list = list(prefill_instances.items())
+            with decode_cv:
+                decode_list = list(decode_instances.items())
+            if prefill_list and decode_list:
+                break
+            print(f"Waiting for instances... prefill={len(prefill_list)}, decode={len(decode_list)}")
+            await asyncio.sleep(1)
+            retry += 1
+
+        if not prefill_list or not decode_list:
+            return await make_response(
+                ({"error": "No prefill/decode instances registered"}, 503)
+            )
+
+        # Round-robin selection
+        prefill_addr, prefill_zmq_addr = prefill_list[count % len(prefill_list)]
+        prefill_zmq_addr = prefill_zmq_addr[0]
+
+        decode_addr, decode_zmq_addr = decode_list[count % len(decode_list)]
+        decode_zmq_addr = decode_zmq_addr[0]
+
+        print(
+            f"handle_request count:{count}, "
+            f"[HTTP:{prefill_addr}, ZMQ:{prefill_zmq_addr}] -> "
+            f"[HTTP:{decode_addr}, ZMQ:{decode_zmq_addr}]"
+        )
+        count += 1
+
+        # Build request_id with embedded addresses (critical for P2pNcclConnector)
+        request_id = (
+            f"___prefill_addr_{prefill_zmq_addr}___"
+            f"decode_addr_{decode_zmq_addr}_{random_uuid()}"
+        )
+
+        # Phase 1: Prefill
+        prefill_start = time.perf_counter()
         async for _ in forward_request(
-            f"http://{prefill_instance}/v1/completions",
-            kv_prepare_request,
+            f"http://{prefill_addr}{request.path}",
+            prefill_request,
+            request_id,
         ):
-            continue  # consume the prefill response (we don't need the output)
-    except HTTPException as exc:
-        raise exc
+            continue
+        prefill_end = time.perf_counter()
+        prefill_time = prefill_end - prefill_start
 
-    prefill_end = time.perf_counter()
-    prefill_time = prefill_end - prefill_start
+        # Phase 2: Decode
+        decode_start = time.perf_counter()
+        generator = forward_request(
+            f"http://{decode_addr}{request.path}",
+            original_request_data,
+            request_id,
+        )
 
-    # Phase 2: Decode (send original request to a random decode instance)
-    decode_instance = random.choice(DECODE_INSTANCES)
-    decode_start = time.perf_counter()
-
-    is_streaming = request_body.get("stream", False)
-
-    if is_streaming:
-        async def streaming_generator():
-            async for chunk in forward_request(
-                f"http://{decode_instance}/v1/completions",
-                request_body,
-            ):
+        # Wrap generator to record timing after completion
+        async def timed_generator():
+            async for chunk in generator:
                 yield chunk
-
-            # After streaming is done, record metrics
             decode_end = time.perf_counter()
             decode_time = decode_end - decode_start
             total_time = decode_end - prefill_start
-            await record_metric(
-                bench_batch_id, bench_request_id,
-                prefill_time, decode_time, total_time, decode_instance,
-            )
+            async with metrics_lock:
+                metrics_store[bench_batch_id].append({
+                    "request_id": bench_request_id,
+                    "prefill_time_ms": round(prefill_time * 1000, 2),
+                    "decode_time_ms": round(decode_time * 1000, 2),
+                    "total_time_ms": round(total_time * 1000, 2),
+                    "decode_instance": decode_addr,
+                    "timestamp": time.time(),
+                })
 
-        return StreamingResponse(
-            streaming_generator(),
-            media_type="text/event-stream",
-        )
+        response = await make_response(timed_generator())
+        response.timeout = None
+        return response
 
-    # Non-streaming
-    response_body = b""
-    async for chunk in forward_request(
-        f"http://{decode_instance}/v1/completions",
-        request_body,
-    ):
-        response_body += chunk
-
-    decode_end = time.perf_counter()
-    decode_time = decode_end - decode_start
-    total_time = decode_end - prefill_start
-
-    await record_metric(
-        bench_batch_id, bench_request_id,
-        prefill_time, decode_time, total_time, decode_instance,
-    )
-
-    # Parse and augment response with timing
-    try:
-        result = json.loads(response_body)
-        result["timing"] = {
-            "prefill_time_ms": round(prefill_time * 1000, 2),
-            "decode_time_ms": round(decode_time * 1000, 2),
-            "total_time_ms": round(total_time * 1000, 2),
-            "decode_instance": decode_instance,
-        }
-        return JSONResponse(content=result)
-    except json.JSONDecodeError:
-        return JSONResponse(content={"raw": response_body.decode()})
+    except Exception as exc:
+        import sys
+        import traceback
+        exc_info = sys.exc_info()
+        print("Error occurred in disagg prefill proxy server")
+        print(exc)
+        print("".join(traceback.format_exception(*exc_info)))
+        return await make_response(({"error": str(exc)}, 500))
 
 
-@app.post("/v1/chat/completions")
-async def proxy_chat_completions(raw_request: Request):
-    """Proxy /v1/chat/completions with same PD routing logic."""
-    request_body = await raw_request.json()
-    bench_batch_id = request_body.pop("batch_id", "default")
-    bench_request_id = request_body.pop("request_id", f"req-{time.time()}")
-    original_max_tokens = request_body.get("max_tokens", 453)
-
-    # Phase 1: Prefill
-    kv_prepare_request = request_body.copy()
-    kv_prepare_request["max_tokens"] = 1
-    if "max_completion_tokens" in kv_prepare_request:
-        kv_prepare_request["max_completion_tokens"] = 1
-
-    prefill_instance = random.choice(PREFILL_INSTANCES)
-    prefill_start = time.perf_counter()
-
-    try:
-        async for _ in forward_request(
-            f"http://{prefill_instance}/v1/chat/completions",
-            kv_prepare_request,
-        ):
-            continue
-    except HTTPException as exc:
-        raise exc
-
-    prefill_end = time.perf_counter()
-    prefill_time = prefill_end - prefill_start
-
-    # Phase 2: Decode
-    decode_instance = random.choice(DECODE_INSTANCES)
-    decode_start = time.perf_counter()
-
-    response_body = b""
-    async for chunk in forward_request(
-        f"http://{decode_instance}/v1/chat/completions",
-        request_body,
-    ):
-        response_body += chunk
-
-    decode_end = time.perf_counter()
-    decode_time = decode_end - decode_start
-    total_time = decode_end - prefill_start
-
-    await record_metric(
-        bench_batch_id, bench_request_id,
-        prefill_time, decode_time, total_time, decode_instance,
-    )
-
-    try:
-        result = json.loads(response_body)
-        result["timing"] = {
-            "prefill_time_ms": round(prefill_time * 1000, 2),
-            "decode_time_ms": round(decode_time * 1000, 2),
-            "total_time_ms": round(total_time * 1000, 2),
-            "decode_instance": decode_instance,
-        }
-        return JSONResponse(content=result)
-    except json.JSONDecodeError:
-        return JSONResponse(content={"raw": response_body.decode()})
-
-
-@app.get("/metrics")
+@app.route("/metrics", methods=["GET"])
 async def get_metrics():
-    """Return collected timing metrics."""
     async with metrics_lock:
-        return JSONResponse(content=dict(metrics_store))
+        return await make_response(jsonify(dict(metrics_store)))
 
 
-@app.post("/metrics/reset")
+@app.route("/metrics/reset", methods=["POST"])
 async def reset_metrics():
-    """Clear all collected metrics."""
     async with metrics_lock:
         metrics_store.clear()
-    return JSONResponse(content={"status": "metrics reset"})
+    return await make_response(jsonify({"status": "metrics reset"}))
 
 
-@app.get("/health")
+@app.route("/health", methods=["GET"])
 async def health_check():
-    """Health check endpoint."""
-    return JSONResponse(content={"status": "ok"})
+    return await make_response(jsonify({
+        "status": "ok",
+        "prefill_instances": len(prefill_instances),
+        "decode_instances": len(decode_instances),
+    }))
 
 
-def main():
-    global PREFILL_INSTANCES, DECODE_INSTANCES
-
+def parse_args():
     parser = argparse.ArgumentParser(description="PD Disaggregated Proxy Server")
-    parser.add_argument("--port", type=int, default=8000,
-                        help="Proxy server port (default: 8000)")
-    parser.add_argument("--prefill", type=str, nargs="+",
-                        default=["localhost:8100"],
-                        help="Prefill instance host:port list")
-    parser.add_argument("--decode", type=str, nargs="+",
-                        default=["localhost:8201", "localhost:8202", "localhost:8203"],
-                        help="Decode instance host:port list")
-    args = parser.parse_args()
-
-    PREFILL_INSTANCES = args.prefill
-    DECODE_INSTANCES = args.decode
-
-    logger.info("=" * 50)
-    logger.info(" PD Disaggregated Proxy Server")
-    logger.info("=" * 50)
-    logger.info(f"  Prefill instances: {PREFILL_INSTANCES}")
-    logger.info(f"  Decode instances:  {DECODE_INSTANCES}")
-    logger.info(f"  Proxy port:        {args.port}")
-    logger.info("=" * 50)
-
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    parser.add_argument("--zmq-port", type=int, default=30001,
+                        help="ZMQ service discovery port (default: 30001)")
+    parser.add_argument("--http-port", type=int, default=10001,
+                        help="HTTP proxy port (default: 10001)")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    print("=" * 50)
+    print(" PD Disaggregated Proxy Server")
+    print("=" * 50)
+    print(f"  ZMQ discovery port: {args.zmq_port}")
+    print(f"  HTTP proxy port:    {args.http_port}")
+    print("=" * 50)
+
+    t = start_service_discovery("0.0.0.0", args.zmq_port)
+    app.run(host="0.0.0.0", port=args.http_port)
+    t.join()
