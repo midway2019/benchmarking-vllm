@@ -467,7 +467,7 @@ def parse_args():
     )
     parser.add_argument(
         "--model", type=str,
-        default="LLM-Research/Meta-Llama-3.1-8B-Instruct",
+        default="Qwen/Qwen3-8B",
         help="Model name for tokenizer and API requests",
     )
     parser.add_argument(

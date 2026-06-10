@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-MODEL_NAME="${HF_MODEL_NAME:-LLM-Research/Meta-Llama-3.1-8B-Instruct}"
+MODEL_NAME="${HF_MODEL_NAME:-Qwen/Qwen3-8B}"
 INPUT_LEN="${INPUT_LEN:-453}"
 OUTPUT_LEN="${OUTPUT_LEN:-453}"
 ROUTER_PORT="${ROUTER_PORT:-29001}"
