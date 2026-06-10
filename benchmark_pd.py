@@ -1,12 +1,12 @@
 """
 benchmark_pd.py
-vLLM PD分离架构 Benchmark 核心脚本。
+SGLang PD分离架构 Benchmark 核心脚本。
 
 在固定 input/output token 长度下，遍历不同 batch size，
 通过 streaming API 精确测量每个请求的 prefill 时间 (TTFT) 和 decode 时间。
 
 请求流程：
-  客户端 → Proxy → Prefill 实例 → 随机 Decode 实例 → 客户端
+  客户端 → sglang_router → Prefill 实例 → Decode 实例 → 客户端
 
 测量方式：
   - Prefill 时间 = TTFT (Time To First Token)
@@ -134,8 +134,6 @@ async def send_single_request(
             "max_tokens": max_tokens,
             "stream": True,
             "temperature": 0.0,
-            "batch_id": f"batch-{batch_size}",
-            "request_id": request_id,
         }
     else:
         endpoint = f"{base_url}/v1/completions"
@@ -145,8 +143,6 @@ async def send_single_request(
             "max_tokens": max_tokens,
             "stream": True,
             "temperature": 0.0,
-            "batch_id": f"batch-{batch_size}",
-            "request_id": request_id,
         }
 
     try:
@@ -346,7 +342,7 @@ async def main():
         batch_sizes.append(392)
 
     logger.info("=" * 60)
-    logger.info(" vLLM PD Disaggregated Benchmark")
+    logger.info(" SGLang PD Disaggregated Benchmark")
     logger.info("=" * 60)
     logger.info(f"  Model:          {args.model}")
     logger.info(f"  Input tokens:   {args.input_len}")
@@ -466,7 +462,7 @@ def print_summary_table(results: list[BatchResult]):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="vLLM PD Disaggregated Benchmark",
+        description="SGLang PD Disaggregated Benchmark",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -484,7 +480,7 @@ def parse_args():
     )
     parser.add_argument(
         "--proxy-url", type=str, default="http://localhost:29001",
-        help="Proxy server URL",
+        help="SGLang router URL",
     )
     parser.add_argument(
         "--output", "-o", type=str, default="results/benchmark_results.json",

@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_benchmark.sh
-# 一键运行 vLLM PD分离 Benchmark：启动集群 → 启动Proxy → 运行测试 → 生成报告 → 清理
+# 一键运行 SGLang PD分离 Benchmark：启动集群 → 运行测试 → 生成报告 → 清理
 
 set -e
 
@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 MODEL_NAME="${HF_MODEL_NAME:-meta-llama/Meta-Llama-3.1-8B-Instruct}"
 INPUT_LEN="${INPUT_LEN:-453}"
 OUTPUT_LEN="${OUTPUT_LEN:-453}"
-PROXY_PORT="${PROXY_PORT:-29001}"
+ROUTER_PORT="${ROUTER_PORT:-29001}"
 RESULTS_DIR="${RESULTS_DIR:-results}"
 NUM_WARMUP="${NUM_WARMUP:-3}"
 INTER_BATCH_DELAY="${INTER_BATCH_DELAY:-5}"
@@ -20,34 +20,28 @@ LOG_DIR="./logs"
 mkdir -p "$LOG_DIR" "$RESULTS_DIR"
 
 CLUSTER_PID=""
-PROXY_PID=""
 
 echo "=========================================="
-echo " vLLM PD Benchmark - Full Pipeline"
+echo " SGLang PD Benchmark - Full Pipeline"
 echo "=========================================="
 echo "Model:        $MODEL_NAME"
 echo "Input len:    $INPUT_LEN tokens"
 echo "Output len:   $OUTPUT_LEN tokens"
-echo "Proxy port:   $PROXY_PORT"
+echo "Router port:  $ROUTER_PORT"
 echo "Results dir:  $RESULTS_DIR"
 echo "=========================================="
 
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    if [ -n "$PROXY_PID" ] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        echo "  Stopping proxy server (PID $PROXY_PID)..."
-        kill "$PROXY_PID" 2>/dev/null || true
-    fi
     if [ -n "$CLUSTER_PID" ] && kill -0 "$CLUSTER_PID" 2>/dev/null; then
         echo "  Stopping PD cluster (PID $CLUSTER_PID)..."
         kill "$CLUSTER_PID" 2>/dev/null || true
     fi
-    # Kill any remaining vllm processes started by this script
     pkill -f "launch_pd_cluster.sh" 2>/dev/null || true
-    pkill -f "proxy_server.py" 2>/dev/null || true
-    # Kill vllm serve processes on our ports
-    for port in 29100 29201 29202 29203; do
+    pkill -f "sglang.launch_server" 2>/dev/null || true
+    pkill -f "sglang_router" 2>/dev/null || true
+    for port in 29100 29201 29202 29203 29001; do
         pid=$(lsof -ti:$port 2>/dev/null || true)
         if [ -n "$pid" ]; then
             echo "  Killing process on port $port (PID $pid)..."
@@ -80,51 +74,39 @@ wait_for_server() {
 }
 
 # ========================================
-# Step 1: Launch PD Cluster
+# Step 1: Launch PD Cluster + Router
 # ========================================
 echo ""
-echo "[Step 1/5] Launching PD cluster (1P3D)..."
+echo "[Step 1/4] Launching SGLang PD cluster (1P3D + router)..."
 bash "$SCRIPT_DIR/launch_pd_cluster.sh" > "$LOG_DIR/cluster_launch.log" 2>&1 &
 CLUSTER_PID=$!
 echo "  Cluster launcher PID: $CLUSTER_PID"
 
-# Wait for all vLLM instances
-echo "  Waiting for vLLM instances to be ready (this may take a few minutes)..."
+echo "  Waiting for all instances and router to be ready (this may take a few minutes)..."
 wait_for_server 29100 "Prefill" 600
 wait_for_server 29201 "Decode-1" 600
 wait_for_server 29202 "Decode-2" 600
 wait_for_server 29203 "Decode-3" 600
 
-echo "  All vLLM instances are ready!"
+# Wait a bit more for the router to start after instances are ready
+sleep 10
+wait_for_server $ROUTER_PORT "Router" 60
+
+echo "  All services are ready!"
 
 # ========================================
-# Step 2: Launch Proxy Server
+# Step 2: Run Benchmark
 # ========================================
 echo ""
-echo "[Step 2/5] Launching proxy server (ZMQ:39001, HTTP:$PROXY_PORT)..."
-python3 "$SCRIPT_DIR/proxy_server.py" \
-    --zmq-port 39001 \
-    --http-port "$PROXY_PORT" \
-    > "$LOG_DIR/proxy.log" 2>&1 &
-PROXY_PID=$!
-echo "  Proxy PID: $PROXY_PID"
-
-wait_for_server "$PROXY_PORT" "Proxy" 30
-
-# ========================================
-# Step 3: Run Benchmark
-# ========================================
-echo ""
-echo "[Step 3/5] Running benchmark..."
+echo "[Step 2/4] Running benchmark..."
 echo "  This will test batch sizes: 16, 32, 48, ..., 384, 392"
-echo "  Estimated time: depends on model and GPU performance"
 echo ""
 
 python3 "$SCRIPT_DIR/benchmark_pd.py" \
     --model "$MODEL_NAME" \
     --input-len "$INPUT_LEN" \
     --output-len "$OUTPUT_LEN" \
-    --proxy-url "http://localhost:$PROXY_PORT" \
+    --proxy-url "http://localhost:$ROUTER_PORT" \
     --output "$RESULTS_DIR/benchmark_results.json" \
     --num-warmup "$NUM_WARMUP" \
     --timeout "$REQUEST_TIMEOUT" \
@@ -139,17 +121,17 @@ if [ $BENCH_EXIT -ne 0 ]; then
 fi
 
 # ========================================
-# Step 4: Generate Visualizations
+# Step 3: Generate Visualizations
 # ========================================
 echo ""
-echo "[Step 4/5] Generating visualizations..."
+echo "[Step 3/4] Generating visualizations..."
 python3 "$SCRIPT_DIR/visualize_results.py" \
     --input "$RESULTS_DIR/benchmark_results.json" \
     --output-dir "$RESULTS_DIR/plots" \
     2>&1 | tee "$LOG_DIR/visualize.log"
 
 # ========================================
-# Step 5: Summary
+# Step 4: Summary
 # ========================================
 echo ""
 echo "=========================================="
