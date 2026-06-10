@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 MODEL_NAME="${HF_MODEL_NAME:-meta-llama/Meta-Llama-3.1-8B-Instruct}"
 INPUT_LEN="${INPUT_LEN:-453}"
 OUTPUT_LEN="${OUTPUT_LEN:-453}"
-PROXY_PORT="${PROXY_PORT:-10001}"
+PROXY_PORT="${PROXY_PORT:-29001}"
 RESULTS_DIR="${RESULTS_DIR:-results}"
 NUM_WARMUP="${NUM_WARMUP:-3}"
 INTER_BATCH_DELAY="${INTER_BATCH_DELAY:-5}"
@@ -47,7 +47,7 @@ cleanup() {
     pkill -f "launch_pd_cluster.sh" 2>/dev/null || true
     pkill -f "proxy_server.py" 2>/dev/null || true
     # Kill vllm serve processes on our ports
-    for port in 8100 8201 8202 8203; do
+    for port in 29100 29201 29202 29203; do
         pid=$(lsof -ti:$port 2>/dev/null || true)
         if [ -n "$pid" ]; then
             echo "  Killing process on port $port (PID $pid)..."
@@ -90,10 +90,10 @@ echo "  Cluster launcher PID: $CLUSTER_PID"
 
 # Wait for all vLLM instances
 echo "  Waiting for vLLM instances to be ready (this may take a few minutes)..."
-wait_for_server 8100 "Prefill" 600
-wait_for_server 8201 "Decode-1" 600
-wait_for_server 8202 "Decode-2" 600
-wait_for_server 8203 "Decode-3" 600
+wait_for_server 29100 "Prefill" 600
+wait_for_server 29201 "Decode-1" 600
+wait_for_server 29202 "Decode-2" 600
+wait_for_server 29203 "Decode-3" 600
 
 echo "  All vLLM instances are ready!"
 
@@ -101,9 +101,9 @@ echo "  All vLLM instances are ready!"
 # Step 2: Launch Proxy Server
 # ========================================
 echo ""
-echo "[Step 2/5] Launching proxy server (ZMQ:30001, HTTP:$PROXY_PORT)..."
+echo "[Step 2/5] Launching proxy server (ZMQ:39001, HTTP:$PROXY_PORT)..."
 python3 "$SCRIPT_DIR/proxy_server.py" \
-    --zmq-port 30001 \
+    --zmq-port 39001 \
     --http-port "$PROXY_PORT" \
     > "$LOG_DIR/proxy.log" 2>&1 &
 PROXY_PID=$!

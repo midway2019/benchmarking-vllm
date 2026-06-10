@@ -10,9 +10,9 @@ VLLM_HOST_IP="${VLLM_HOST_IP:-127.0.0.1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 
-PREFILL_PORT=8100
-DECODE_PORTS=(8201 8202 8203)
-PROXY_PORT=30001
+PREFILL_PORT=29100
+DECODE_PORTS=(29201 29202 29203)
+PROXY_PORT=39001
 
 LOG_DIR="./logs"
 mkdir -p "$LOG_DIR"
@@ -67,7 +67,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve "$MODEL_NAME" \
     --no-enable-prefix-caching \
     --trust-remote-code \
     --kv-transfer-config \
-    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_producer","kv_rank":0,"kv_parallel_size":4,"kv_buffer_size":"1e9","kv_port":"14579","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"$PREFILL_PORT"'","send_type":"PUT_ASYNC"}}' \
+    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_producer","kv_rank":0,"kv_parallel_size":4,"kv_buffer_size":"1e9","kv_port":"24579","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"$PREFILL_PORT"'","send_type":"PUT_ASYNC"}}' \
     > "$LOG_DIR/prefill.log" 2>&1 &
 PREFILL_PID=$!
 echo "  Prefill PID: $PREFILL_PID"
@@ -82,7 +82,7 @@ CUDA_VISIBLE_DEVICES=1 vllm serve "$MODEL_NAME" \
     --no-enable-prefix-caching \
     --trust-remote-code \
     --kv-transfer-config \
-    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":1,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"14580","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[0]}"'","send_type":"PUT_ASYNC"}}' \
+    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":1,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"24580","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[0]}"'","send_type":"PUT_ASYNC"}}' \
     > "$LOG_DIR/decode_1.log" 2>&1 &
 DECODE1_PID=$!
 echo "  Decode 1 PID: $DECODE1_PID"
@@ -97,7 +97,7 @@ CUDA_VISIBLE_DEVICES=2 vllm serve "$MODEL_NAME" \
     --no-enable-prefix-caching \
     --trust-remote-code \
     --kv-transfer-config \
-    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":2,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"14581","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[1]}"'","send_type":"PUT_ASYNC"}}' \
+    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":2,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"24581","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[1]}"'","send_type":"PUT_ASYNC"}}' \
     > "$LOG_DIR/decode_2.log" 2>&1 &
 DECODE2_PID=$!
 echo "  Decode 2 PID: $DECODE2_PID"
@@ -112,7 +112,7 @@ CUDA_VISIBLE_DEVICES=3 vllm serve "$MODEL_NAME" \
     --no-enable-prefix-caching \
     --trust-remote-code \
     --kv-transfer-config \
-    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":3,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"14582","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[2]}"'","send_type":"PUT_ASYNC"}}' \
+    '{"kv_connector":"P2pNcclConnector","kv_role":"kv_consumer","kv_rank":3,"kv_parallel_size":4,"kv_buffer_size":"1e10","kv_port":"24582","kv_connector_extra_config":{"proxy_ip":"'"$VLLM_HOST_IP"'","proxy_port":"'"$PROXY_PORT"'","http_ip":"'"$VLLM_HOST_IP"'","http_port":"'"${DECODE_PORTS[2]}"'","send_type":"PUT_ASYNC"}}' \
     > "$LOG_DIR/decode_3.log" 2>&1 &
 DECODE3_PID=$!
 echo "  Decode 3 PID: $DECODE3_PID"

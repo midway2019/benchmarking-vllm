@@ -483,7 +483,7 @@ def parse_args():
         help="Fixed output token length (max_tokens)",
     )
     parser.add_argument(
-        "--proxy-url", type=str, default="http://localhost:10001",
+        "--proxy-url", type=str, default="http://localhost:29001",
         help="Proxy server URL",
     )
     parser.add_argument(

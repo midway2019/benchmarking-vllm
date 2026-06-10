@@ -265,10 +265,10 @@ async def health_check():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PD Disaggregated Proxy Server")
-    parser.add_argument("--zmq-port", type=int, default=30001,
-                        help="ZMQ service discovery port (default: 30001)")
-    parser.add_argument("--http-port", type=int, default=10001,
-                        help="HTTP proxy port (default: 10001)")
+    parser.add_argument("--zmq-port", type=int, default=39001,
+                        help="ZMQ service discovery port (default: 39001)")
+    parser.add_argument("--http-port", type=int, default=29001,
+                        help="HTTP proxy port (default: 29001)")
     return parser.parse_args()
 
 
