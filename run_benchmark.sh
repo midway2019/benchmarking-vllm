@@ -103,6 +103,8 @@ echo "  All vLLM instances are ready!"
 echo ""
 echo "[Step 2/5] Launching proxy server on port $PROXY_PORT..."
 python3 "$SCRIPT_DIR/proxy_server.py" --port "$PROXY_PORT" \
+    --prefill localhost:8100 \
+    --decode localhost:8201 localhost:8202 localhost:8203 \
     > "$LOG_DIR/proxy.log" 2>&1 &
 PROXY_PID=$!
 echo "  Proxy PID: $PROXY_PID"
