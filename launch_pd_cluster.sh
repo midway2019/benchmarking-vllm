@@ -8,7 +8,7 @@ set -e
 # 使用 ModelScope 下载模型（不走 HuggingFace）
 export SGLANG_USE_MODELSCOPE=true
 
-MODEL_NAME="${HF_MODEL_NAME:-meta-llama/Meta-Llama-3.1-8B-Instruct}"
+MODEL_NAME="${HF_MODEL_NAME:-LLM-Research/Meta-Llama-3.1-8B-Instruct}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
 MEM_FRACTION="${MEM_FRACTION:-0.85}"
 
