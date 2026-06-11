@@ -80,7 +80,6 @@ CUDA_VISIBLE_DEVICES=1 python -m sglang.launch_server \
     --disaggregation-transfer-backend nixl \
     --host 0.0.0.0 \
     --port ${DECODE_PORTS[0]} \
-    --base-gpu-id 1 \
     --mem-fraction-static $MEM_FRACTION \
     --disable-radix-cache \
     --trust-remote-code \
@@ -96,7 +95,6 @@ CUDA_VISIBLE_DEVICES=2 python -m sglang.launch_server \
     --disaggregation-transfer-backend nixl \
     --host 0.0.0.0 \
     --port ${DECODE_PORTS[1]} \
-    --base-gpu-id 2 \
     --mem-fraction-static $MEM_FRACTION \
     --disable-radix-cache \
     --trust-remote-code \
@@ -112,7 +110,6 @@ CUDA_VISIBLE_DEVICES=3 python -m sglang.launch_server \
     --disaggregation-transfer-backend nixl \
     --host 0.0.0.0 \
     --port ${DECODE_PORTS[2]} \
-    --base-gpu-id 3 \
     --mem-fraction-static $MEM_FRACTION \
     --disable-radix-cache \
     --trust-remote-code \
