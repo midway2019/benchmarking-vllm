@@ -125,11 +125,11 @@ wait_for_server ${DECODE_PORTS[0]} "Decode-1"
 wait_for_server ${DECODE_PORTS[1]} "Decode-2"
 wait_for_server ${DECODE_PORTS[2]} "Decode-3"
 
-# --- Launch SGLang Router ---
+# --- Launch Simple Router ---
 echo ""
-echo "[5/5] Launching sglang_router (port $ROUTER_PORT)..."
-python -m sglang_router.launch_router \
-    --pd-disaggregation \
+echo "[5/5] Launching simple_router (port $ROUTER_PORT)..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "$SCRIPT_DIR/simple_router.py" \
     --prefill http://127.0.0.1:$PREFILL_PORT \
     --decode http://127.0.0.1:${DECODE_PORTS[0]} http://127.0.0.1:${DECODE_PORTS[1]} http://127.0.0.1:${DECODE_PORTS[2]} \
     --host 0.0.0.0 \

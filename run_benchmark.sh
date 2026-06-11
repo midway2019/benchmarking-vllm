@@ -40,7 +40,7 @@ cleanup() {
     fi
     pkill -f "launch_pd_cluster.sh" 2>/dev/null || true
     pkill -f "sglang.launch_server" 2>/dev/null || true
-    pkill -f "sglang_router" 2>/dev/null || true
+    pkill -f "simple_router.py" 2>/dev/null || true
     for port in 29100 29201 29202 29203 29001; do
         pid=$(lsof -ti:$port 2>/dev/null || true)
         if [ -n "$pid" ]; then
