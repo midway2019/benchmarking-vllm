@@ -351,6 +351,7 @@ async def main():
     logger.info(f"  Proxy URL:      {args.proxy_url}")
     logger.info(f"  Use Chat API:   {args.use_chat_api}")
     logger.info(f"  Num warmup:     {args.num_warmup}")
+    logger.info(f"  Num rounds:     {args.num_rounds}")
     logger.info("=" * 60)
 
     # Load tokenizer and generate fixed-length prompt
@@ -378,26 +379,51 @@ async def main():
     logger.info("Starting benchmark...")
 
     for batch_size in tqdm(batch_sizes, desc="Batch sizes"):
-        logger.info(f"\n--- Batch Size: {batch_size} ---")
+        logger.info(f"\n--- Batch Size: {batch_size} ({args.num_rounds} rounds) ---")
 
-        batch_result = await run_batch_benchmark(
-            base_url=args.proxy_url,
-            prompt=prompt,
-            max_tokens=args.output_len,
-            model=args.model,
-            batch_size=batch_size,
-            use_chat_api=args.use_chat_api,
-            request_timeout=args.timeout,
+        round_results = []
+        for round_idx in range(args.num_rounds):
+            batch_result = await run_batch_benchmark(
+                base_url=args.proxy_url,
+                prompt=prompt,
+                max_tokens=args.output_len,
+                model=args.model,
+                batch_size=batch_size,
+                use_chat_api=args.use_chat_api,
+                request_timeout=args.timeout,
+            )
+            round_results.append(batch_result)
+            logger.info(
+                f"  Round {round_idx+1}/{args.num_rounds}: "
+                f"Prefill={batch_result.avg_prefill_ms:.1f}ms, "
+                f"Decode={batch_result.avg_decode_ms:.1f}ms, "
+                f"Success={batch_result.num_success}/{batch_result.num_requests}"
+            )
+            if round_idx < args.num_rounds - 1:
+                await asyncio.sleep(2)
+
+        # Aggregate across rounds: merge all successful requests
+        all_round_requests = []
+        for br in round_results:
+            all_round_requests.extend(
+                [r for r in br.requests] if br.requests else []
+            )
+        merged_result = compute_batch_stats(
+            [RequestResult(**r) for r in all_round_requests] if all_round_requests
+            else [RequestResult(request_id="empty", batch_size=batch_size, success=False)],
+            batch_size,
         )
+        merged_result.num_requests = sum(br.num_requests for br in round_results)
+        merged_result.num_success = sum(br.num_success for br in round_results)
 
-        all_results.append(batch_result)
+        all_results.append(merged_result)
 
         logger.info(
-            f"  BS={batch_size:>3d} | "
-            f"Success: {batch_result.num_success}/{batch_result.num_requests} | "
-            f"Prefill: {batch_result.avg_prefill_ms:>8.1f}ms (p99: {batch_result.p99_prefill_ms:>8.1f}ms) | "
-            f"Decode:  {batch_result.avg_decode_ms:>8.1f}ms (p99: {batch_result.p99_decode_ms:>8.1f}ms) | "
-            f"Total:   {batch_result.avg_total_ms:>8.1f}ms"
+            f"  BS={batch_size:>3d} (avg of {args.num_rounds} rounds) | "
+            f"Success: {merged_result.num_success}/{merged_result.num_requests} | "
+            f"Prefill: {merged_result.avg_prefill_ms:>8.1f}ms (p99: {merged_result.p99_prefill_ms:>8.1f}ms) | "
+            f"Decode:  {merged_result.avg_decode_ms:>8.1f}ms (p99: {merged_result.p99_decode_ms:>8.1f}ms) | "
+            f"Total:   {merged_result.avg_total_ms:>8.1f}ms"
         )
 
         # Brief pause between batch sizes to let the system stabilize
@@ -411,6 +437,7 @@ async def main():
             "input_tokens": args.input_len,
             "output_tokens": args.output_len,
             "batch_sizes": batch_sizes,
+            "num_rounds": args.num_rounds,
             "proxy_url": args.proxy_url,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
@@ -497,6 +524,10 @@ def parse_args():
     parser.add_argument(
         "--inter-batch-delay", type=float, default=5.0,
         help="Delay (seconds) between batch sizes for system stabilization",
+    )
+    parser.add_argument(
+        "--num-rounds", type=int, default=3,
+        help="Number of rounds per batch size to reduce variance",
     )
     parser.add_argument(
         "--use-chat-api", action="store_true",
