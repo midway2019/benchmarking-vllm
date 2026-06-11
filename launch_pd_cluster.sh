@@ -12,6 +12,7 @@ MEM_FRACTION="${MEM_FRACTION:-0.85}"
 PREFILL_PORT=29100
 DECODE_PORTS=(29201 29202 29203)
 ROUTER_PORT=29001
+PREFILL_BOOTSTRAP_PORT=29101
 
 LOG_DIR="./logs"
 mkdir -p "$LOG_DIR"
@@ -23,6 +24,7 @@ echo "Model:          $MODEL_NAME"
 echo "Prefill Port:   $PREFILL_PORT (GPU 0)"
 echo "Decode Ports:   ${DECODE_PORTS[*]} (GPU 1/2/3)"
 echo "Router Port:    $ROUTER_PORT"
+echo "Bootstrap Port: $PREFILL_BOOTSTRAP_PORT"
 echo "Transfer:       NIXL (NVLink)"
 echo "Radix Cache:    DISABLED"
 echo "=========================================="
@@ -63,6 +65,7 @@ CUDA_VISIBLE_DEVICES=0 python -m sglang.launch_server \
     --model-path "$MODEL_NAME" \
     --disaggregation-mode prefill \
     --disaggregation-transfer-backend nixl \
+    --disaggregation-bootstrap-port $PREFILL_BOOTSTRAP_PORT \
     --host 0.0.0.0 \
     --port $PREFILL_PORT \
     --mem-fraction-static $MEM_FRACTION \
@@ -131,6 +134,7 @@ echo "[5/5] Launching PD load balancer (port $ROUTER_PORT)..."
 python -m sglang.srt.disaggregation.launch_lb \
     --prefill http://127.0.0.1:$PREFILL_PORT \
     --decode http://127.0.0.1:${DECODE_PORTS[0]} http://127.0.0.1:${DECODE_PORTS[1]} http://127.0.0.1:${DECODE_PORTS[2]} \
+    --prefill-bootstrap-ports $PREFILL_BOOTSTRAP_PORT \
     --host 0.0.0.0 \
     --port $ROUTER_PORT \
     --policy random \
