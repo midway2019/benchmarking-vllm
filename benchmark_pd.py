@@ -465,11 +465,7 @@ def parse_args():
         description="SGLang PD Disaggregated Benchmark",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--model", type=str,
-        default="/artesia-workspace/models/Qwen3-8B",
-        help="Model name for tokenizer and API requests",
-    )
+        default="Qwen/Qwen3-8B",
     parser.add_argument(
         "--input-len", type=int, default=453,
         help="Fixed input token length",
