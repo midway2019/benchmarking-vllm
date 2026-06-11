@@ -125,15 +125,15 @@ wait_for_server ${DECODE_PORTS[0]} "Decode-1"
 wait_for_server ${DECODE_PORTS[1]} "Decode-2"
 wait_for_server ${DECODE_PORTS[2]} "Decode-3"
 
-# --- Launch Simple Router ---
+# --- Launch PD Load Balancer ---
 echo ""
-echo "[5/5] Launching simple_router (port $ROUTER_PORT)..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python "$SCRIPT_DIR/simple_router.py" \
+echo "[5/5] Launching PD load balancer (port $ROUTER_PORT)..."
+python -m sglang.srt.disaggregation.launch_lb \
     --prefill http://127.0.0.1:$PREFILL_PORT \
     --decode http://127.0.0.1:${DECODE_PORTS[0]} http://127.0.0.1:${DECODE_PORTS[1]} http://127.0.0.1:${DECODE_PORTS[2]} \
     --host 0.0.0.0 \
     --port $ROUTER_PORT \
+    --policy random \
     > "$LOG_DIR/router.log" 2>&1 &
 ROUTER_PID=$!
 echo "  Router PID: $ROUTER_PID"
