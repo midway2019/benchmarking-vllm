@@ -5,10 +5,7 @@
 
 set -e
 
-# 使用 ModelScope 下载模型
-export SGLANG_USE_MODELSCOPE=true
-
-MODEL_NAME="${HF_MODEL_NAME:-Qwen/Qwen3-8B}"
+MODEL_NAME="${HF_MODEL_NAME:-/artesia-workspace/models/Qwen3-8B}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-1024}"
 MEM_FRACTION="${MEM_FRACTION:-0.85}"
 
