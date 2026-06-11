@@ -526,7 +526,7 @@ def parse_args():
         help="Delay (seconds) between batch sizes for system stabilization",
     )
     parser.add_argument(
-        "--num-rounds", type=int, default=3,
+        "--num-rounds", type=int, default=4,
         help="Number of rounds per batch size to reduce variance",
     )
     parser.add_argument(
