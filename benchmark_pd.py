@@ -467,7 +467,7 @@ def parse_args():
     )
     parser.add_argument(
         "--model", type=str,
-        default="/artesia-workspace/models/Qwen/Qwen3-8B",
+        default="/artesia-workspace/models/Qwen3-8B",
         help="Model name for tokenizer and API requests",
     )
     parser.add_argument(
